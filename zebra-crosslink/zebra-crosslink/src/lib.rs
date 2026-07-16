@@ -1315,7 +1315,22 @@ async fn tfl_service_main_loop(internal_handle: TFLServiceHandle, global_seed: [
 
         if let Some(new_block) = i_bft_blocks.last() {
             new_final_hash.0 = BlockHash::from_header_data(new_block.headers.first().expect("at least 1 header")).0;
-            new_final_height = block_height_from_hash(&call, new_final_hash).await.unwrap();
+            // The loaded PoS store tip finalizes a PoW block that must exist in the local PoW
+            // state; if it doesn't, the stores are inconsistent (e.g. a PoS store restored next
+            // to an older PoW state, or a rolled-back PoW state) and starting would panic later
+            // with no explanation. Refuse to start with an actionable error instead.
+            new_final_height = match block_height_from_hash(&call, new_final_hash).await {
+                Some(height) => height,
+                None => {
+                    return Err(format!(
+                        "PoS store tip (BFT height {}) finalizes PoW block {} which is not in the local PoW state. \
+                        The PoS store at {:?} is ahead of the PoW state. Refusing to start with inconsistent stores: \
+                        restore a PoW state that contains this block (or a consistent snapshot of both stores), \
+                        or move the PoS store file aside to rebuild it from the network.",
+                        new_block.height, new_final_hash, path_to_pos_store_file,
+                    ));
+                }
+            };
 //println!("Loaded at pow ({:?}, {:?}) with roster: {:?}", new_final_height, new_final_hash, unsorted_roster);
         }
 
